@@ -3,6 +3,7 @@
 //! Bart Massey 2021
 
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 extern crate argwerk;
 use regex::bytes as regex;
@@ -31,6 +32,7 @@ argwerk::define! {
 #[cfg(unix)]
 mod into_bytes {
     use super::*;
+
     use std::os::unix::ffi::OsStringExt;
 
     pub fn into_bytes(source: OsString) -> Vec<u8> {
@@ -46,13 +48,25 @@ mod into_bytes {
 use into_bytes::*;
 
 // https://users.rust-lang.org/t/fs-rename-overwriting-existing-file/17314/6
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod rename_noreplace {
-    use std::ffi::CString;
+    use super::*;
 
-    pub fn rename_noreplace(from_name: &[u8], to_name: &[u8]) -> std::io::Result<()> {
-        let from_name = CString::new(from_name).unwrap();
-        let to_name = CString::new(to_name).unwrap();
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStringExt;
+
+    fn to_c_string<P: AsRef<Path>>(path: P) -> CString {
+        CString::new(path.as_ref().as_os_str().to_owned().into_vec()).unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn rename_noreplace<P1, P2>(from_name: P1, to_name: P2) -> std::io::Result<()>
+    where
+        P1: AsRef<Path>,
+        P2: AsRef<Path>,
+    {
+        let from_name = to_c_string(from_name);
+        let to_name = to_c_string(to_name);
         let result = unsafe {
             libc::renameat2(
                 libc::AT_FDCWD,
@@ -77,12 +91,15 @@ fn run() -> Result<(), Box<dyn std::error::Error + 'static>> {
     let subst: Vec<u8> = args.replace_pat.bytes().collect();
 
     for file in args.files_list {
-        let target = into_bytes(file);
-        let replacement = match_re.replace(&target, &subst).to_vec();
+        let target = PathBuf::from(file);
+        let target_bytes = into_bytes(target.as_os_str().to_owned());
+        let replacement = PathBuf::from(into_os_string(
+            match_re.replace(&target_bytes, &subst).to_vec(),
+        ));
         if let Err(err) = rename_noreplace(&target, &replacement) {
             eprintln!(
                 "{} ({} → {}): {}",
-                into_os_string(target).to_string_lossy(),
+                target.as_os_str().to_string_lossy(),
                 args.match_pat,
                 args.replace_pat,
                 err,
